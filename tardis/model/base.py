@@ -423,79 +423,56 @@ class Radial1DModel(HDFWriterMixin):
         csvy_schema_file = os.path.join(schema_dir, 'csvy_model.yml')
         csvy_model_config = Configuration(validate_dict(csvy_model_config,
                                            schemapath=csvy_schema_file))
-
-        if hasattr(csvy_model_data, 'columns'):
-            abund_names = set([name for name in csvy_model_data.columns
-                           if nucname.iselement(name) or nucname.isnuclide(name)])
-            unsupported_columns = set(csvy_model_data.columns) - abund_names - CSVY_SUPPORTED_COLUMNS
-
-            field_names = set([field['name'] for field in csvy_model_config.datatype.fields])
-            assert set(csvy_model_data.columns) - field_names == set(),\
-                'CSVY columns exist without field descriptions'
-            assert field_names - set(csvy_model_data.columns) == set(),\
-                'CSVY field descriptions exist without corresponding csv data'
-            if unsupported_columns != set():
-                logger.warning("The following columns are specified in the csvy"
-                               "model file, but are IGNORED by TARDIS: %s"%(str(unsupported_columns)))
-
         time_explosion = config.supernova.time_explosion.cgs
 
         electron_densities = None
-        temperature = None
+        abund_names = set([name for name in csvy_model_data.columns
+                           if nucname.iselement(name) or nucname.isnuclide(name)])
+        unsupported_columns = set(csvy_model_data.columns) - abund_names - CSVY_SUPPORTED_COLUMNS
+        field_names = set([field['name'] for field in csvy_model_config.datatype.fields])
+        assert set(csvy_model_data.columns) - field_names == set(),\
+            'CSVY columns exist without field descriptions'
+        assert field_names - set(csvy_model_data.columns) == set(),\
+            'CSVY field descriptions exist without corresponding csv data'
+        if unsupported_columns != set():
+            logger.warning("The following columns are specified in the csvy"
+                           "model file, but are IGNORED by TARDIS: %s"%(str(unsupported_columns)))
 
-        if hasattr(config, 'model'):
-            if hasattr(config.model, 'v_inner_boundary'):
-                v_boundary_inner = config.model.v_inner_boundary
-            else:
-                v_boundary_inner = None
+        
+        v_boundary_outer = csvy_model_config.v_outer_boundary
+        v_boundary_inner = csvy_model_config.v_inner_boundary
 
-            if hasattr(config.model, 'v_outer_boundary'):
-                v_boundary_outer = config.model.v_outer_boundary
-            else:
-                v_boundary_outer = None
-        else:
-            v_boundary_inner = None
-            v_boundary_outer = None
+     
+        velocity_field_index = [field['name'] for field in csvy_model_config.datatype.fields].index('velocity')
+        velocity_unit = u.Unit(csvy_model_config.datatype.fields[velocity_field_index]['unit'])
+        velocity = csvy_model_data['velocity'].values * velocity_unit
+        velocity = velocity.to('cm/s')
 
-        if hasattr(csvy_model_config, 'velocity'):
-            velocity = quantity_linspace(csvy_model_config.velocity.start,
-                                         csvy_model_config.velocity.stop,
-                                         csvy_model_config.velocity.num + 1).cgs
-        else:
-            velocity_field_index = [field['name'] for field in csvy_model_config.datatype.fields].index('velocity')
-            velocity_unit = u.Unit(csvy_model_config.datatype.fields[velocity_field_index]['unit'])
-            velocity = csvy_model_data['velocity'].values * velocity_unit
-            velocity = velocity.to('cm/s')
 
-        if hasattr(csvy_model_config, 'density'):
-            homologous_density = HomologousDensity.from_csvy(config, csvy_model_config)
-        else:
-            time_0 = csvy_model_config.model_density_time_0
-            density_field_index = [field['name'] for field in csvy_model_config.datatype.fields].index('density')
-            density_unit = u.Unit(csvy_model_config.datatype.fields[density_field_index]['unit'])
-            density_0 = csvy_model_data['density'].values * density_unit
-            density_0 = density_0.to('g/cm^3')[1:]
-            density_0 = density_0.insert(0,0)
-            homologous_density = HomologousDensity(density_0, time_0)
+        density_time_0 = csvy_model_config.model_density_time_0
+        density_field_index = [field['name'] for field in csvy_model_config.datatype.fields].index('density')
+        density_unit = u.Unit(csvy_model_config.datatype.fields[density_field_index]['unit'])
+        density_0 = csvy_model_data['density'].values * density_unit
+        density_0 = density_0.to('g/cm^3')[1:]
+        density_0 = density_0.insert(0,0)
+        homologous_density = HomologousDensity(density_0, density_time_0)
 
         no_of_shells = len(velocity) - 1
 
-        if temperature:
-            t_radiative = temperature
-        elif hasattr(csvy_model_data, 'columns'):
-            if 't_rad' in csvy_model_data.columns:
-                t_rad_field_index = [field['name'] for field in csvy_model_config.datatype.fields].index('t_rad')
-                t_rad_unit = u.Unit(csvy_model_config.datatype.fields[t_rad_field_index]['unit'])
-                t_radiative = csvy_model_data['t_rad'].iloc[0:].values * t_rad_unit
-            else:
-                t_radiative = None
+        if 't_rad' in csvy_model_data.columns:
+            t_rad_field_index = [field['name'] for field \
+                      in csvy_model_config.datatype.fields].index('t_rad')
+            t_rad_unit = u.Unit(csvy_model_config.datatype.fields[t_rad_field_index]['unit'])
+            t_radiative = csvy_model_data['t_rad'].iloc[0:].values * t_rad_unit
+        else:
+            t_radiative = None
 
-        dilution_factor = None
-        if hasattr(csvy_model_data, 'columns'):
-            if 'dilution_factor' in csvy_model_data.columns:
-                dilution_factor = csvy_model_data['dilution_factor'].iloc[0:].to_numpy()
+        if 'dilution_factor' in csvy_model_data.columns:
+            dilution_factor = csvy_model_data['dilution_factor'].iloc[0:].to_numpy()
+        else:
+            dilution_factor = None
 
-        elif config.plasma.initial_t_rad > 0 * u.K:
+        if config.plasma.initial_t_rad > 0 * u.K:
             t_radiative = np.ones(no_of_shells) * config.plasma.initial_t_rad
         else:
             t_radiative = None
@@ -508,14 +485,7 @@ class Radial1DModel(HDFWriterMixin):
             t_inner = config.plasma.initial_t_inner
 
 
-        if hasattr(csvy_model_config, 'abundance'):
-            abundances_section = csvy_model_config.abundance
-            abundance, isotope_abundance = read_uniform_abundances(abundances_section, no_of_shells)
-        else:
-            index, abundance, isotope_abundance = parse_csv_abundances(csvy_model_data)
-
-
-
+        index, abundance, isotope_abundance = parse_csv_abundances(csvy_model_data)
         abundance = abundance.replace(np.nan, 0.0)
         abundance = abundance[abundance.sum(axis=1) > 0]
         abundance = abundance.loc[:, 1:]
